@@ -1,0 +1,24 @@
+# deployment/manifest/configmap/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lifesub-web-config
+  namespace: dg0416-lifesub-ns
+data:
+  # 프론트엔드 설정
+  EXPORT_PORT: "18080"
+  NODE_ENV: "production"
+  
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runtime-env-config
+  namespace: dg0416-lifesub-ns
+data:
+  runtime-env.js: |
+    window.__runtime_config__ = {
+      MEMBER_URL: 'http://dg0416.20.249.191.180.nip.io/api/auth',
+      MYSUB_URL: 'http://dg0416.20.249.191.180.nip.io/api/mysub',
+      RECOMMEND_URL: 'http://dg0416.20.249.191.180.nip.io/api/recommend'
+    };

@@ -1,0 +1,44 @@
+# deployment/manifest/deployment/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lifesub-web
+  namespace: dg0416-lifesub-ns
+  labels:
+    app: lifesub-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lifesub-web
+  template:
+    metadata:
+      labels:
+        app: lifesub-web
+    spec:
+      imagePullSecrets:
+      - name: acr-secret
+      containers:
+      - name: lifesub-web
+        image: acrdigitalgarage03.azurecr.io/dg0416/lifesub-web:1.0.0
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 18080
+        envFrom:
+        - configMapRef:
+            name: lifesub-web-config
+        resources:
+          requests:
+            cpu: 256m
+            memory: 256Mi
+          limits:
+            cpu: 1024m
+            memory: 1024Mi
+        volumeMounts:
+        - name: runtime-env
+          mountPath: /usr/share/nginx/html/runtime-env.js
+          subPath: runtime-env.js
+      volumes:
+      - name: runtime-env
+        configMap:
+          name: runtime-env-config
