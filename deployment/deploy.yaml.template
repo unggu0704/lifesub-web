@@ -1,9 +1,36 @@
+# ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lifesub-web-config
+  namespace: ${namespace}
+data:
+  EXPORT_PORT: "${export_port}"
+  NODE_ENV: "production"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runtime-env-config
+  namespace: ${namespace}
+data:
+  runtime-env.js: |
+    window.__runtime_config__ = {
+      MEMBER_URL: '${ingress_host}/api/auth',
+      MYSUB_URL: '${ingress_host}/api/mysub',
+      RECOMMEND_URL: '${ingress_host}/api/recommend'
+    };
+
+---
 # Frontend Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: lifesub-web
   namespace: ${namespace}
+  labels:
+    app: lifesub-web
 spec:
   replicas: ${replicas}
   selector:
@@ -14,12 +41,17 @@ spec:
       labels:
         app: lifesub-web
     spec:
+      imagePullSecrets:
+      - name: acr-secret
       containers:
       - name: lifesub-web
         image: ${lifesub_web_image_path}
         imagePullPolicy: Always
         ports:
         - containerPort: ${export_port}
+        envFrom:
+        - configMapRef:
+            name: lifesub-web-config
         resources:
           requests:
             cpu: ${resources_requests_cpu}
@@ -27,18 +59,29 @@ spec:
           limits:
             cpu: ${resources_limits_cpu}
             memory: ${resources_limits_memory}
+        volumeMounts:
+        - name: runtime-env
+          mountPath: /usr/share/nginx/html/runtime-env.js
+          subPath: runtime-env.js
+      volumes:
+      - name: runtime-env
+        configMap:
+          name: runtime-env-config
 
 ---
 # Frontend Service
 apiVersion: v1
 kind: Service
 metadata:
-  name: lifesub-web
+  name: lifesub-web-service
   namespace: ${namespace}
-spec:
-  selector:
+  labels:
     app: lifesub-web
+spec:
+  type: LoadBalancer
   ports:
   - port: 80
     targetPort: ${export_port}
-  type: LoadBalancer
+    protocol: TCP
+  selector:
+    app: lifesub-web

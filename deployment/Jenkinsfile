@@ -37,14 +37,15 @@ podTemplate(
         stage('Code Analysis & Quality Gate') {
             container('node') {
                 sh "npm install"
-                sh "npm test -- --coverage --passWithNoTests"   //test code 없어도 통과되게 함  
+                sh "npm test -- --coverage --passWithNoTests"
             }
             
             container('sonar-scanner') {
                 withSonarQubeEnv('SonarQube') {
                     sh """
                         ${sonarScannerHome}/bin/sonar-scanner \
-                        -Dsonar.projectKey=lifesub-web \
+                        -Dsonar.projectKey=lifesub-web-lifesub-web-dg0416 \
+                        -Dsonar.projectName=lifesub-web-lifesub-web-dg0416 \
                         -Dsonar.sources=src \
                         -Dsonar.tests=src \
                         -Dsonar.test.inclusions=src/**/*.test.js,src/**/*.test.jsx \
@@ -66,7 +67,7 @@ podTemplate(
                 withCredentials([azureServicePrincipal('azure-credentials')]) {
                     sh """
                         az login --service-principal -u \$AZURE_CLIENT_ID -p \$AZURE_CLIENT_SECRET -t \$AZURE_TENANT_ID
-                        az aks get-credentials --resource-group ictcoe-edu --name ${props.teamid}-aks --overwrite-existing
+                        az aks get-credentials --resource-group rg-digitalgarage-03 --name aks-digitalgarage-03 --overwrite-existing
                         kubectl create namespace ${namespace} --dry-run=client -o yaml | kubectl apply -f -
                     """
                 }
@@ -87,12 +88,9 @@ podTemplate(
 
                         podman build \
                             --build-arg PROJECT_FOLDER="." \
-                            --build-arg REACT_APP_MEMBER_URL="${props.react_app_member_url}" \
-                            --build-arg REACT_APP_MYSUB_URL="${props.react_app_mysub_url}" \
-                            --build-arg REACT_APP_RECOMMEND_URL="${props.react_app_recommend_url}" \
-                            --build-arg BUILD_FOLDER="deployment" \
+                            --build-arg BUILD_FOLDER="deployment/container" \
                             --build-arg EXPORT_PORT="${props.export_port}" \
-                            -f deployment/Dockerfile-lifesub-web \
+                            -f deployment/container/Dockerfile-lifesub-web \
                             -t ${imagePath} .
                         
                         podman push ${imagePath}
@@ -108,13 +106,17 @@ podTemplate(
                     export lifesub_web_image_path=${props.registry}/${props.image_org}/lifesub-web:${imageTag}
                     export replicas=${props.replicas}
                     export export_port=${props.export_port}
+                    export ingress_host=${props.ingress_host}
                     export resources_requests_cpu=${props.resources_requests_cpu}
                     export resources_requests_memory=${props.resources_requests_memory}
                     export resources_limits_cpu=${props.resources_limits_cpu}
                     export resources_limits_memory=${props.resources_limits_memory}
                     
                     envsubst < deployment/${manifest}.template > deployment/${manifest}
+                    
+                    echo "=== Generated Manifest File ==="
                     cat deployment/${manifest}
+                    echo "==============================="
                 """
             }
 
@@ -126,10 +128,17 @@ podTemplate(
                     kubectl -n ${namespace} wait --for=condition=available deployment/lifesub-web --timeout=300s
                     
                     echo "Waiting for service external IP..."
-                    while [[ -z \$(kubectl -n ${namespace} get svc lifesub-web -o jsonpath='{.status.loadBalancer.ingress[0].ip}') ]]; do
-                        sleep 5
+                    while [[ -z \$(kubectl -n ${namespace} get svc lifesub-web-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}') ]]; do
+                        echo "Waiting for external IP assignment..."
+                        sleep 10
                     done
-                    echo "Service external IP: \$(kubectl -n ${namespace} get svc lifesub-web -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+                    
+                    EXTERNAL_IP=\$(kubectl -n ${namespace} get svc lifesub-web-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                    echo "==========================================="
+                    echo "Deployment completed successfully!"
+                    echo "Service External IP: \${EXTERNAL_IP}"
+                    echo "Application URL: http://\${EXTERNAL_IP}"
+                    echo "==========================================="
                 """
             }
         }
