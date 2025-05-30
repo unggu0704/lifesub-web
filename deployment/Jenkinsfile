@@ -32,6 +32,15 @@ podTemplate(
             checkout scm
             props = readProperties file: "deployment/deploy_env_vars"
             namespace = "${props.namespace}"
+            
+            // 디버깅을 위한 프로퍼티 출력
+            echo "Properties loaded:"
+            echo "namespace: ${props.namespace}"
+            echo "registry: ${props.registry}"
+            echo "image_org: ${props.image_org}"
+            echo "teamid: ${props.teamid}"
+            echo "export_port: ${props.export_port}"
+            echo "replicas: ${props.replicas}"
         }
 
         stage('Code Analysis & Quality Gate') {
@@ -44,7 +53,7 @@ podTemplate(
                 withSonarQubeEnv('SonarQube') {
                     sh """
                         ${sonarScannerHome}/bin/sonar-scanner \
-                        -Dsonar.projectKey=lifesub-web \
+                        -Dsonar.projectKey=lifesub-web-lifesub-web-dg0416 \
                         -Dsonar.sources=src \
                         -Dsonar.tests=src \
                         -Dsonar.test.inclusions=src/**/*.test.js,src/**/*.test.jsx \
@@ -66,7 +75,7 @@ podTemplate(
                 withCredentials([azureServicePrincipal('azure-credentials')]) {
                     sh """
                         az login --service-principal -u \$AZURE_CLIENT_ID -p \$AZURE_CLIENT_SECRET -t \$AZURE_TENANT_ID
-                        az aks get-credentials --resource-group ictcoe-edu --name ${props.teamid}-aks --overwrite-existing
+                        az aks get-credentials --resource-group rg-digitalgarage-03 --name aks-digitalgarage-03 --overwrite-existing
                         kubectl create namespace ${namespace} --dry-run=client -o yaml | kubectl apply -f -
                     """
                 }
@@ -80,21 +89,30 @@ podTemplate(
                     usernameVariable: 'USERNAME',
                     passwordVariable: 'PASSWORD'
                 )]) {
-                    def imagePath = "${props.registry}/${props.image_org}/lifesub-web:${imageTag}"
+                    def registry = "${props.registry}"
+                    def imageOrg = "${props.image_org}"
+                    def exportPort = "${props.export_port}"
+                    def imagePath = "${registry}/${imageOrg}/lifesub-web:${imageTag}"
+                    
+                    echo "Build & Push Debug Info:"
+                    echo "Registry: ${registry}"
+                    echo "Image Org: ${imageOrg}"
+                    echo "Export Port: ${exportPort}"
+                    echo "Image Path: ${imagePath}"
                     
                     sh """
-                        podman login ${props.registry} --username \$USERNAME --password \$PASSWORD
+                        echo "Logging into registry: ${registry}"
+                        podman login ${registry} --username \$USERNAME --password \$PASSWORD
 
+                        echo "Building image with tag: ${imagePath}"
                         podman build \
                             --build-arg PROJECT_FOLDER="." \
-                            --build-arg REACT_APP_MEMBER_URL="${props.react_app_member_url}" \
-                            --build-arg REACT_APP_MYSUB_URL="${props.react_app_mysub_url}" \
-                            --build-arg REACT_APP_RECOMMEND_URL="${props.react_app_recommend_url}" \
-                            --build-arg BUILD_FOLDER="deployment" \
-                            --build-arg EXPORT_PORT="${props.export_port}" \
-                            -f deployment/Dockerfile-lifesub-web \
+                            --build-arg BUILD_FOLDER="deployment/container" \
+                            --build-arg EXPORT_PORT="${exportPort}" \
+                            -f deployment/container/Dockerfile-lifesub-web \
                             -t ${imagePath} .
                         
+                        echo "Pushing image: ${imagePath}"
                         podman push ${imagePath}
                     """
                 }
@@ -103,33 +121,62 @@ podTemplate(
 
         stage('Generate & Apply Manifest') {
             container('envsubst') {
+                def registry = "${props.registry}"
+                def imageOrg = "${props.image_org}"
+                def imagePath = "${registry}/${imageOrg}/lifesub-web:${imageTag}"
+                
+                echo "Manifest Generation Debug Info:"
+                echo "Image Path: ${imagePath}"
+                echo "Namespace: ${namespace}"
+                echo "Export Port: ${props.export_port}"
+                echo "Ingress Host: ${props.ingress_host}"
+                
                 sh """
                     export namespace=${namespace}
-                    export lifesub_web_image_path=${props.registry}/${props.image_org}/lifesub-web:${imageTag}
+                    export lifesub_web_image_path=${imagePath}
                     export replicas=${props.replicas}
                     export export_port=${props.export_port}
+                    export ingress_host=${props.ingress_host}
                     export resources_requests_cpu=${props.resources_requests_cpu}
                     export resources_requests_memory=${props.resources_requests_memory}
                     export resources_limits_cpu=${props.resources_limits_cpu}
                     export resources_limits_memory=${props.resources_limits_memory}
                     
+                    echo "Environment variables for manifest generation:"
+                    echo "namespace: \$namespace"
+                    echo "lifesub_web_image_path: \$lifesub_web_image_path"
+                    echo "export_port: \$export_port"
+                    echo "ingress_host: \$ingress_host"
+                    
                     envsubst < deployment/${manifest}.template > deployment/${manifest}
+                    
+                    echo "Generated manifest file:"
+                    echo "========================"
                     cat deployment/${manifest}
+                    echo "========================"
                 """
             }
 
             container('azure-cli') {
                 sh """
+                    echo "Applying manifest to Kubernetes..."
                     kubectl apply -f deployment/${manifest}
                     
                     echo "Waiting for deployment to be ready..."
                     kubectl -n ${namespace} wait --for=condition=available deployment/lifesub-web --timeout=300s
                     
                     echo "Waiting for service external IP..."
-                    while [[ -z \$(kubectl -n ${namespace} get svc lifesub-web -o jsonpath='{.status.loadBalancer.ingress[0].ip}') ]]; do
-                        sleep 5
+                    while [[ -z \$(kubectl -n ${namespace} get svc lifesub-web-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}') ]]; do
+                        echo "Waiting for external IP assignment..."
+                        sleep 10
                     done
-                    echo "Service external IP: \$(kubectl -n ${namespace} get svc lifesub-web -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+                    
+                    EXTERNAL_IP=\$(kubectl -n ${namespace} get svc lifesub-web-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                    echo "======================================"
+                    echo "Deployment completed successfully!"
+                    echo "Service External IP: \$EXTERNAL_IP"
+                    echo "Application URL: http://\$EXTERNAL_IP"
+                    echo "======================================"
                 """
             }
         }

@@ -1,20 +1,18 @@
 # Team Settings
-teamid=unicorn
+teamid=dg0416
 root_project=lifesub-web
-namespace=unicorn-lifesub-ns
+namespace=dg0416-lifesub-ns
 
 # Container Registry Settings
-registry=unicorncr.azurecr.io
-image_org=lifesub
+registry=acrdigitalgarage03.azurecr.io
+image_org=dg0416
 
 # Application Settings
 replicas=1
 export_port=18080
 
-# Backend Service URLs
-react_app_member_url=http://20.249.205.95/member
-react_app_mysub_url=http://20.249.205.95/mysub
-react_app_recommend_url=http://20.249.205.95/recommend
+# Ingress Settings
+ingress_host=http://dg0416.20.249.191.180.nip.io
 
 # Resource Settings
 resources_requests_cpu=256m
