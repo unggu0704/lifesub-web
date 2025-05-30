@@ -12,29 +12,30 @@ podTemplate(
     containers: [
         containerTemplate(name: 'node', image: 'node:20-slim', ttyEnabled: true, command: 'cat'),
         containerTemplate(name: 'podman', image: "mgoltzsche/podman", ttyEnabled: true, command: 'cat', privileged: true),
-        containerTemplate(name: 'azure-cli', image: 'hiondal/azure-kubectl:latest', command: 'cat', ttyEnabled: true),
-        containerTemplate(name: 'envsubst', image: "hiondal/envsubst", command: 'sleep', args: '1h'),
-        containerTemplate(name: 'sonar-scanner', image: 'sonarsource/sonar-scanner-cli:latest', command: 'cat', ttyEnabled: true),
-        containerTemplate(name: 'git', image: 'alpine/git:latest', command: 'cat', ttyEnabled: true)
+        containerTemplate(name: 'git', image: 'alpine/git:latest', command: 'cat', ttyEnabled: true),
+        containerTemplate(name: 'sonar-scanner', image: 'sonarsource/sonar-scanner-cli:latest', command: 'cat', ttyEnabled: true)
     ],
     volumes: [
-        emptyDirVolume(mountPath: '/root/.azure', memory: false),
         emptyDirVolume(mountPath: '/opt/sonar-scanner/.sonar/cache', memory: false)
     ]
 ) {
     node(PIPELINE_ID) {
         def props
         def imageTag = getImageTag()
-        def manifest = "deploy.yaml"
-        def namespace
         def sonarScannerHome = '/opt/sonar-scanner'
-        def MANIFEST_REPO = "https://github.com/cna-bootcamp/lifesub-manifest.git"
-        def MANIFEST_BRANCH = "main"
 
         stage("Get Source") {
             checkout scm
             props = readProperties file: "deployment/deploy_env_vars"
-            namespace = "${props.namespace}"
+            
+            // 디버깅을 위한 프로퍼티 출력
+            echo "Properties loaded:"
+            echo "namespace: ${props.namespace}"
+            echo "registry: ${props.registry}"
+            echo "image_org: ${props.image_org}"
+            echo "teamid: ${props.teamid}"
+            echo "export_port: ${props.export_port}"
+            echo "replicas: ${props.replicas}"
         }
 
         stage('Code Analysis & Quality Gate') {
@@ -47,7 +48,7 @@ podTemplate(
                 withSonarQubeEnv('SonarQube') {
                     sh """
                         ${sonarScannerHome}/bin/sonar-scanner \
-                        -Dsonar.projectKey=lifesub-web \
+                        -Dsonar.projectKey=lifesub-web-dg0416 \
                         -Dsonar.sources=src \
                         -Dsonar.tests=src \
                         -Dsonar.test.inclusions=src/**/*.test.js,src/**/*.test.jsx \
@@ -64,18 +65,6 @@ podTemplate(
             }
         }
 
-        stage("Setup AKS") {
-            container('azure-cli') {
-                withCredentials([azureServicePrincipal('azure-credentials')]) {
-                    sh """
-                        az login --service-principal -u \$AZURE_CLIENT_ID -p \$AZURE_CLIENT_SECRET -t \$AZURE_TENANT_ID
-                        az aks get-credentials --resource-group ictcoe-edu --name ${props.teamid}-aks --overwrite-existing
-                        kubectl create namespace ${namespace} --dry-run=client -o yaml | kubectl apply -f -
-                    """
-                }
-            }
-        }
-
         stage('Build & Push Image') {
             container('podman') {
                 withCredentials([usernamePassword(
@@ -83,21 +72,30 @@ podTemplate(
                     usernameVariable: 'USERNAME',
                     passwordVariable: 'PASSWORD'
                 )]) {
-                    def imagePath = "${props.registry}/${props.image_org}/lifesub-web:${imageTag}"
+                    def registry = "${props.registry}"
+                    def imageOrg = "${props.image_org}"
+                    def exportPort = "${props.export_port}"
+                    def imagePath = "${registry}/${imageOrg}/lifesub-web:${imageTag}"
+                    
+                    echo "Build & Push Debug Info:"
+                    echo "Registry: ${registry}"
+                    echo "Image Org: ${imageOrg}"
+                    echo "Export Port: ${exportPort}"
+                    echo "Image Path: ${imagePath}"
                     
                     sh """
-                        podman login ${props.registry} --username \$USERNAME --password \$PASSWORD
+                        echo "Logging into registry: ${registry}"
+                        podman login ${registry} --username \$USERNAME --password \$PASSWORD
 
+                        echo "Building image with tag: ${imagePath}"
                         podman build \
                             --build-arg PROJECT_FOLDER="." \
-                            --build-arg REACT_APP_MEMBER_URL="${props.react_app_member_url}" \
-                            --build-arg REACT_APP_MYSUB_URL="${props.react_app_mysub_url}" \
-                            --build-arg REACT_APP_RECOMMEND_URL="${props.react_app_recommend_url}" \
-                            --build-arg BUILD_FOLDER="deployment" \
-                            --build-arg EXPORT_PORT="${props.export_port}" \
-                            -f deployment/Dockerfile-lifesub-web \
+                            --build-arg BUILD_FOLDER="deployment/container" \
+                            --build-arg EXPORT_PORT="${exportPort}" \
+                            -f deployment/container/Dockerfile-lifesub-web \
                             -t ${imagePath} .
                         
+                        echo "Pushing image: ${imagePath}"
                         podman push ${imagePath}
                     """
                 }
@@ -106,31 +104,101 @@ podTemplate(
 
         stage('Update Manifest Repository') {
             container('git') {
-                // 임시 디렉토리 생성
-                sh "mkdir -p /tmp/manifests"
-                
-                // Clone manifest repository
-                withCredentials([usernamePassword(credentialsId: 'github-credentials', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) {
+                withCredentials([usernamePassword(
+                    credentialsId: 'github-credentials-dg0416',
+                    usernameVariable: 'GIT_USERNAME',
+                    passwordVariable: 'GIT_TOKEN'
+                )]) {
                     sh """
+                        echo "=== Git Configuration ==="
                         git config --global user.email "jenkins@example.com"
-                        git config --global user.name "Jenkins Pipeline"
+                        git config --global user.name "Jenkins CI"
                         
-                        git clone https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/cna-bootcamp/lifesub-manifest.git /tmp/manifests
-                        cd /tmp/manifests
+                        echo "=== Cloning Manifest Repository ==="
+                        git clone https://\${GIT_USERNAME}:\${GIT_TOKEN}@github.com/unggu0704/lifesub-manifest.git manifest-repo
+                        cd manifest-repo
                         
-                        # Update frontend image tag
-                        if [ -f lifesub-web/deployments/lifesub-web-deployment.yaml ]; then
-                            sed -i "s|image: ${props.registry}/${props.image_org}/lifesub-web:.*|image: ${props.registry}/${props.image_org}/lifesub-web:${imageTag}|g" lifesub-web/deployments/lifesub-web-deployment.yaml
+                        echo "=== Current manifest repository structure ==="
+                        find . -name "*.yaml" -o -name "*.yml" | head -20
+                        
+                        echo "=== Updating Frontend Image Tag ==="
+                        
+                        # Frontend 배포 파일 업데이트
+                        if [ -f "frontend/frontend-deployment.yaml" ]; then
+                            echo "Updating frontend deployment image tag..."
+                            sed -i 's|image: ${props.registry}/${props.image_org}/lifesub-web:.*|image: ${props.registry}/${props.image_org}/lifesub-web:${imageTag}|g' frontend/frontend-deployment.yaml
+                            echo "Frontend deployment updated"
+                        elif [ -f "frontend/lifesub-web-deployment.yaml" ]; then
+                            echo "Updating lifesub-web deployment image tag..."
+                            sed -i 's|image: ${props.registry}/${props.image_org}/lifesub-web:.*|image: ${props.registry}/${props.image_org}/lifesub-web:${imageTag}|g' frontend/lifesub-web-deployment.yaml
+                            echo "Frontend deployment updated"
+                        elif [ -f "frontend/deployment.yaml" ]; then
+                            echo "Updating frontend deployment.yaml image tag..."
+                            sed -i 's|image: ${props.registry}/${props.image_org}/lifesub-web:.*|image: ${props.registry}/${props.image_org}/lifesub-web:${imageTag}|g' frontend/deployment.yaml
+                            echo "Frontend deployment updated"
+                        else
+                            echo "Warning: Frontend deployment file not found in expected locations"
+                            echo "Available files in frontend directory:"
+                            ls -la frontend/ || echo "Frontend directory does not exist"
                         fi
                         
-                        # Commit and push changes
-                        git add .
-                        git commit -m "Update frontend image tag to ${imageTag}" || true
-                        git push
+                        # 통합 manifest 파일이 있는 경우 처리
+                        if [ -f "frontend/frontend-services.yaml" ]; then
+                            echo "Updating frontend-services.yaml..."
+                            sed -i 's|image: ${props.registry}/${props.image_org}/lifesub-web:.*|image: ${props.registry}/${props.image_org}/lifesub-web:${imageTag}|g' frontend/frontend-services.yaml
+                            echo "Frontend services manifest updated"
+                        fi
+                        
+                        # 전체 매니페스트 파일에서 frontend 이미지 업데이트 (백업)
+                        echo "=== Updating any additional manifest files ==="
+                        find . -name "*.yaml" -o -name "*.yml" | xargs grep -l "lifesub-web:" | while read file; do
+                            echo "Updating \$file"
+                            sed -i 's|image: ${props.registry}/${props.image_org}/lifesub-web:.*|image: ${props.registry}/${props.image_org}/lifesub-web:${imageTag}|g' "\$file"
+                        done
+                        
+                        # 변경사항 확인
+                        echo "=== Changes Summary ==="
+                        git status
+                        git diff
+                        
+                        # 변경사항이 있는 경우에만 커밋
+                        if ! git diff --quiet; then
+                            echo "=== Committing Changes ==="
+                            git add .
+                            git commit -m "Update frontend image tag to ${imageTag}
+                            
+                            - lifesub-web: ${props.registry}/${props.image_org}/lifesub-web:${imageTag}
+                            
+                            Build: ${env.BUILD_NUMBER}
+                            Triggered by: ${env.BUILD_USER_ID ?: 'Jenkins'}"
+                            
+                            echo "=== Pushing Changes ==="
+                            git push origin main
+                            echo "Successfully updated manifest repository"
+                        else
+                            echo "No changes detected in manifest files"
+                        fi
                     """
                 }
             }
         }
+
+        stage('Deployment Summary') {
+            echo """
+            ====================================== 
+            Frontend Deployment Summary
+            ======================================
+            Build Number: ${env.BUILD_NUMBER}
+            Image Tag: ${imageTag}
+            
+            Updated Image:
+            - Frontend: ${props.registry}/${props.image_org}/lifesub-web:${imageTag}
+            
+            Manifest Repository: https://github.com/unggu0704/lifesub-manifest.git
+            
+            ArgoCD will automatically detect and deploy these changes.
+            ======================================
+            """
+        }
     }
 }
-
